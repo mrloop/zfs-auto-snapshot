@@ -24,6 +24,7 @@ IFS="
 "
 
 # Set default program options.
+opt_date_format='%F-%H%M'
 opt_backup_full=''
 opt_backup_incremental=''
 opt_default_exclude=''
@@ -67,6 +68,7 @@ print_usage ()
 {
 	echo "Usage: $0 [options] [-l label] <'//' | name [name...]>
   --default-exclude     Exclude datasets if com.sun:auto-snapshot is unset.
+  -D, --date=FORMAT     Date format. Default '%F-%H%M'.
   -d, --debug           Print debugging messages.
   -e, --event=EVENT     Set the com.sun:auto-snapshot-desc property to EVENT.
       --fast            Use a faster zfs list invocation.
@@ -227,6 +229,45 @@ find_last_snap () # dset, GLOB
 }
 
 
+setup_snap_glob ()
+{
+	local base="$1"
+	local format="$2"
+
+	# The dash to mimic the separator between prefix/label
+	# and DATE in SNAPNAME.
+	echo -n "$base"-
+	echo $format | \
+		awk -v ORS="" '{ gsub(/./,"&\n") ; print }' | \
+		while read char; do
+			[ "$char" = "%" ] && continue
+
+			if [ "$char" = "." ]; then
+				echo -n "."
+			elif [ "$char" = "-" ]; then
+				echo -n "-"
+			else
+				# Given the format char, create
+				# a string with only that.
+				# So if we said '%Y', the percentage
+				# sign would have been filtered out
+				# at the top of the loop, leaving the
+				# 'Y' here. So str=2014.
+				str=$(date +"%$char")
+
+				# Print the lenght of that with
+				# question marks (4 with the '%Y'
+				# example above).
+				i=0
+				while [ $i -lt ${#str} ]; do
+					echo -n "?"
+					i=$((i + 1))
+				done
+			fi
+		done
+}
+
+
 do_snapshots () # properties, flags, snapname, oldglob, [targets...]
 {
 	local PROPS="$1"
@@ -343,12 +384,12 @@ do_send () # snapname, oldglob
 GETOPT=$(getopt \
   --longoptions=default-exclude,dry-run,fast,skip-scrub,recursive \
   --longoptions=event:,keep:,label:,prefix:,sep: \
-  --longoptions=debug,help,quiet,syslog,verbose \
+  --longoptions=date:,debug,help,quiet,syslog,verbose \
   --longoptions=pre-snapshot:,post-snapshot:,destroy-only \
   --longoptions=send-full:,send-incr:,send-opts:,recv-opts: \
   --longoptions=send-ssh-opts:,send-mbuf-opts:,pre-send:,post-send: \
   --longoptions=send-fallback \
-  --options=dnshe:l:k:p:rs:qgv \
+  --options=D:dnshe:l:k:p:rs:qgv \
   -- "$@" ) \
   || exit 128
 
@@ -357,6 +398,10 @@ eval set -- "$GETOPT"
 while [ "$#" -gt '0' ]
 do
 	case "$1" in
+		(-D|--date)
+			opt_date_format="$2"
+			shift 2
+			;;
 		(-d|--debug)
 			opt_debug='1'
 			opt_quiet=''
@@ -714,13 +759,13 @@ SNAPPROP="-o com.sun:auto-snapshot-desc='$opt_event'"
 
 # ISO style date; fifteen characters: YYYY-MM-DD-HHMM
 # On Solaris %H%M expands to 12h34.
-DATE=$(date --utc +%F-%H%M)
+DATE=$(date --utc +"$opt_date_format")
 
 # The snapshot name after the @ symbol.
 SNAPNAME="${opt_prefix:+$opt_prefix$opt_sep}${opt_label:+$opt_label}-$DATE"
 
-# The expression for matching old snapshots.  -YYYY-MM-DD-HHMM
-SNAPGLOB="${opt_prefix:+$opt_prefix$opt_sep}${opt_label:+$opt_label}-???????????????"
+# The expression for matching old snapshots.
+SNAPGLOB="$(setup_snap_glob ${opt_prefix:+$opt_prefix$opt_sep}${opt_label:+$opt_label} $opt_date_format)"
 
 if [ -n "$opt_do_snapshots" ]
 then
